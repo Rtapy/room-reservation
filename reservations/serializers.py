@@ -16,9 +16,9 @@ class AwareDateTimeField(serializers.DateTimeField):
 
 
 class ReservationWindowSerializer(serializers.Serializer):
-    start_at = AwareDateTimeField()
-    end_at = AwareDateTimeField()
-    attendees_count = serializers.IntegerField(min_value=1)
+    start_at = AwareDateTimeField(help_text="Future start time with an explicit timezone offset or Z.")
+    end_at = AwareDateTimeField(help_text="End time with an explicit timezone offset or Z.")
+    attendees_count = serializers.IntegerField(min_value=1, help_text="Required room capacity.")
 
 
 class AvailabilityQuerySerializer(ReservationWindowSerializer):

@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema_view
 from rest_framework import mixins, status, viewsets
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.decorators import action
@@ -6,6 +7,7 @@ from rest_framework.response import Response
 
 from reservations.models import Reservation, Room
 from reservations.permissions import IsReservationOwnerOrStaff, IsStaffOrReadOnly
+from reservations.schema import RESERVATION_SCHEMA, ROOM_SCHEMA, TOKEN_SCHEMA
 from reservations.selectors import get_available_rooms
 from reservations.serializers import (
     AvailabilityQuerySerializer, ReservationCreateSerializer, ReservationSerializer, RoomSerializer,
@@ -13,11 +15,13 @@ from reservations.serializers import (
 from reservations.services import cancel_reservation, create_reservation
 
 
+@extend_schema_view(**TOKEN_SCHEMA)
 class ObtainTokenView(ObtainAuthToken):
     authentication_classes = ()
     permission_classes = (AllowAny,)
 
 
+@extend_schema_view(**ROOM_SCHEMA)
 class RoomViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
@@ -37,6 +41,7 @@ class RoomViewSet(
         return Response(self.get_serializer(rooms, many=True).data)
 
 
+@extend_schema_view(**RESERVATION_SCHEMA)
 class ReservationViewSet(
     mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet
 ):
@@ -60,6 +65,8 @@ class ReservationViewSet(
         return Response(self.get_serializer(reservation).data)
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Reservation.objects.none()
         queryset = Reservation.objects.select_related("room", "user")
         if self.request.user.is_staff:
             return queryset
