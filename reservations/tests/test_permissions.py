@@ -178,7 +178,6 @@ class AccessControlTests(APITestCase):
 
     def test_object_permission_allows_only_owner_or_staff(self):
         permission = IsReservationOwnerOrStaff()
-        # This permission will also protect the cancellation action in stage 6.
         for method in ("GET", "POST"):
             for user, expected in (
                 (self.employee, True), (self.staff, True),

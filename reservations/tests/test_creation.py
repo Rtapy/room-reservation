@@ -154,9 +154,8 @@ class ReservationCreationTests(APITestCase):
 
     def test_replay_is_snapshot_even_if_reservation_is_cancelled(self):
         first = self.reserve()
-        Reservation.objects.filter(pk=first.data["id"]).update(
-            status=Reservation.Status.CANCELLED, cancelled_at=NOW
-        )
+        cancelled = self.client.post(reverse("reservation-cancel", args=[first.data["id"]]))
+        self.assertEqual(cancelled.status_code, 200)
         second = self.reserve()
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.json(), second.json())
@@ -182,12 +181,18 @@ class ReservationCreationTests(APITestCase):
         self.assertEqual(Reservation.objects.count(), 3)
 
     def test_cancelled_reservation_does_not_block_new_creation(self):
-        Reservation.objects.create(
-            room=self.room, user=self.other, start_at=START,
-            end_at=START + timedelta(hours=1), attendees_count=2,
-            status=Reservation.Status.CANCELLED, cancelled_at=NOW,
+        original = self.reserve()
+        self.assertEqual(original.status_code, 201)
+        cancelled = self.client.post(reverse("reservation-cancel", args=[original.data["id"]]))
+        self.assertEqual(cancelled.status_code, 200)
+        available = self.client.get(
+            reverse("room-available"),
+            {"start_at": START.isoformat(), "end_at": (START + timedelta(hours=1)).isoformat(), "attendees_count": 3},
         )
-        self.assertEqual(self.reserve().status_code, 201)
+        self.assertEqual(available.status_code, 200)
+        self.assertIn(self.room.pk, {room["id"] for room in available.data})
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.tokens[self.other.pk]}")
+        self.assertEqual(self.reserve(key="new-reservation").status_code, 201)
         self.assertEqual(Reservation.objects.count(), 2)
 
     def test_missing_room_returns_404_without_consuming_key(self):

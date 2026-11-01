@@ -10,7 +10,7 @@ from reservations.selectors import get_available_rooms
 from reservations.serializers import (
     AvailabilityQuerySerializer, ReservationCreateSerializer, ReservationSerializer, RoomSerializer,
 )
-from reservations.services import create_reservation
+from reservations.services import cancel_reservation, create_reservation
 
 
 class ObtainTokenView(ObtainAuthToken):
@@ -52,6 +52,12 @@ class ReservationViewSet(
             **params.validated_data,
         )
         return Response(response_body, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        reservation = self.get_object()
+        reservation = cancel_reservation(reservation=reservation)
+        return Response(self.get_serializer(reservation).data)
 
     def get_queryset(self):
         queryset = Reservation.objects.select_related("room", "user")
