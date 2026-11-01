@@ -81,3 +81,27 @@ class Reservation(models.Model):
 
     def __str__(self):
         return f"Room {self.room_id}: {self.start_at} - {self.end_at}"
+
+
+class ReservationRequest(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    key = models.CharField(max_length=255)
+    request_hash = models.CharField(max_length=64)
+    # These are filled before the creation transaction commits.
+    reservation = models.OneToOneField(
+        Reservation, on_delete=models.PROTECT, null=True, related_name="creation_request"
+    )
+    response_body = models.JSONField(null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "key"], name="reservation_request_user_key"),
+            models.CheckConstraint(
+                condition=(
+                    Q(reservation__isnull=True, response_body__isnull=True)
+                    | Q(reservation__isnull=False, response_body__isnull=False)
+                ),
+                name="reservation_request_response_pair",
+            ),
+        ]
