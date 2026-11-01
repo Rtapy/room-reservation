@@ -1,6 +1,6 @@
 # Stage 7: test audit and project status
 
-Verified on 2026-11-01. Branch: `test/reservation-conflicts-permissions`, based directly on `feature/reservation-cancellation` at `3399bd5` as requested. This step changes tests and documentation; application behavior, API contracts, dependencies, settings, and migrations are unchanged.
+Verified on 2026-11-01. Branch: `test/reservation-conflicts-permissions`, based directly on `feature/reservation-cancellation` at `3399bd5` as requested. This step changes tests and documentation; application behavior, API contracts, dependencies, settings, and migrations are unchanged. This is the historical stage-7 audit; the later Swagger delivery is recorded at the end.
 
 ## Results and counting
 
@@ -253,7 +253,7 @@ The suite no longer has dedicated checks for repeated token issuance, stale logi
 
 The backend for stages 1–7 is implemented: Django/DRF monolith, PostgreSQL Compose setup, core room/reservation models and internal idempotency record, token authentication, role/ownership permissions, availability, safe creation, and soft cancellation. All nine documented method/path combinations are exercised by API tests. Creation concurrency is additionally exercised over real local HTTP.
 
-The checkout includes README setup/endpoint instructions, `.env.example`, short decisions, two application migrations, and this review report. Stage 8's final documentation/handoff review has not been performed as a separate delivery. Swagger is optional in the PDF and is not implemented. No frontend is part of this backend delivery, and no committed CI workflow is present.
+At stage 7, the checkout includes README setup/endpoint instructions, `.env.example`, short decisions, two application migrations, and this review report. Stage 8's final documentation/handoff review has not been performed as a separate delivery. Swagger is optional in the PDF and was not implemented at that point. No frontend is part of this backend delivery, and no committed CI workflow is present.
 
 Additional verification in this run:
 
@@ -275,3 +275,16 @@ Additional verification in this run:
 - Shared time tests are deterministic; they do not exercise every IANA timezone transition or every parser input.
 - No code-coverage percentage or mutation score was measured. This report maps concrete behavior to named tests.
 - No production code or public-contract change, new migration, or merge into develop is part of this step. Review the test-only branch relative to its cancellation parent; merging remains with the user.
+
+## Swagger delivery: current verification
+
+Verified on 2026-11-01 on `feature/api-swagger`, branched from the updated `develop` at `b4f25ed`.
+
+- Added `drf-spectacular` with pinned dependencies, public Swagger UI at `/api/docs/`, and the generated OpenAPI schema at `/api/schema/`.
+- Documented all 9 existing operations, token authentication, staff/owner access, availability queries, time/capacity rules, the required creation idempotency header, replay/conflict behavior, and bodyless soft cancellation.
+- Added only two documentation tests in [test_schema.py](../reservations/tests/test_schema.py). The contract test validates OpenAPI and detects missing/extra operations, incorrect status/security declarations, missing required query/header inputs, incorrect creation input/output separation, or an unwanted cancellation body. The page test detects a broken public Swagger route/template/schema link. Both run without a database and do not repeat business-rule tests.
+- Full suite: **60 passed**, 0 failures, 0 errors, 0 skips; Django reported **3.838 seconds**. The original 58 behavioral tests, including PostgreSQL and real HTTP concurrency tests, remain present.
+- `python manage.py spectacular --file /tmp/arkstar-openapi.yaml --validate --fail-on-warn` completed with no warnings or errors. The exported schema is a generated artifact, not a second maintained API specification.
+- `check --database default`, `makemigrations --check --dry-run`, `migrate --check`, and `pip check` passed. No new migration is needed.
+- Headless Chrome loaded the actual local Swagger page and schema: **9 rendered operations**, the **Authorize** button present, and no schema-load error. No browser-driven authenticated write was performed; protected behavior is covered by the existing API/HTTP tests.
+- Swagger's default JavaScript/CSS come from a CDN; a browser needs internet access. Schema generation and schema download are independent of that CDN. Production hosting and mobile-client consumption remain unverified.

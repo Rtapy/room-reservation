@@ -31,7 +31,7 @@ The company timezone is `Asia/Tehran`; Django timezone support is enabled.
 
 ## Current scope
 
-Stages 1–7: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, transactional reservation creation with idempotency, soft cancellation, and a reviewed essential test suite.
+Stages 1–7 plus API documentation: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, transactional reservation creation with idempotency, soft cancellation, a reviewed essential test suite, and Swagger/OpenAPI for every current endpoint.
 The initial migration installs `btree_gist` for the exclusion constraint. The local Compose database user has the required permissions.
 Availability and reservation creation share the time rules; creation rechecks the time, active status, capacity, and conflicts after locking the room inside a database transaction.
 Design decisions are in [docs/DECISIONS.md](docs/DECISIONS.md); the task is in [docs/task.pdf](docs/task.pdf).
@@ -68,6 +68,26 @@ Missing, invalid, or inactive-user tokens return `401` on protected endpoints; s
 Room fields are `id`, `name`, `capacity`, and `is_active`. Creating a room requires a unique `name` and positive `capacity`; `is_active` defaults to `true`.
 Reservation responses include `id`, `room`, `user`, `start_at`, `end_at`, `attendees_count`, `status`, `created_at`, and `cancelled_at`; `room` and `user` are IDs. Lists are JSON arrays.
 Employees attempting room writes receive `403`. Room deletion and direct reservation updates/deletion are not exposed.
+
+## Swagger / OpenAPI
+
+After installing `requirements.txt` and starting Django, open [Swagger UI](http://127.0.0.1:8000/api/docs/).
+The [OpenAPI schema](http://127.0.0.1:8000/api/schema/) is available as YAML, or JSON with `?format=json`.
+Both documentation endpoints are public. The business endpoints retain their existing token and role permissions.
+
+1. Execute `POST /api/auth/token/` with an existing user's credentials.
+2. Click **Authorize**, enter `Token <token>` (including the `Token ` prefix), and authorize.
+3. Use **Try it out** on the protected endpoints. Creating a reservation also requires `Idempotency-Key`.
+
+All 9 API operations include their inputs, success/error responses, and access rules. Availability has three required query parameters; cancellation requires no body. Examples need an existing room ID and a future interval within your configured duration limits.
+The schema is generated from the current serializers with [drf-spectacular](https://drf-spectacular.readthedocs.io/en/latest/readme.html); custom contracts are annotated in `reservations/schema.py`.
+Swagger UI loads its JavaScript and CSS from the package's default CDN, so the browser needs internet access. Schema generation and download do not depend on the CDN.
+
+Validate/export the schema without a database connection:
+
+```bash
+python manage.py spectacular --file /tmp/reservations-openapi.yaml --validate --fail-on-warn
+```
 
 ## Availability search
 
@@ -125,7 +145,7 @@ With PostgreSQL running and the virtual environment active:
 python manage.py test reservations.tests --noinput
 ```
 
-The curated suite has 58 test methods: 42 APIClient tests with real tokens and PostgreSQL, 7 database/model tests, 6 real local HTTP concurrency tests, and 3 shared-validator tests without a database.
+The suite has 60 test methods: the 58 reviewed behavioral tests (42 APIClient tests with real tokens and PostgreSQL, 7 database/model tests, 6 real local HTTP concurrency tests, and 3 shared-validator tests without a database), plus 2 documentation tests without a database. The documentation tests check the generated contract for all 9 operations and the public Swagger page; they do not repeat the business-rule tests.
 The conflict tests include 10 independent ORM writers and 10 HTTP users; only one overlapping reservation succeeds. Concurrent identical keys replay one response. Lock-wait tests check fresh room eligibility and time after waiting. Cancellation tests preserve ownership, history, the first cancellation timestamp, and the freed interval.
 See [the complete test audit and project status](docs/TEST_REPORT.md) for the before/after inventory, every removal/merge decision, the purpose of each retained test, actual execution evidence, and verification limits.
 The database user must be able to create the separate test database.

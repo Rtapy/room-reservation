@@ -1,6 +1,7 @@
 # Decisions
 
 - A simple monolithic architecture using Django, DRF, and a single `reservations` app is sufficient. The database is PostgreSQL, and authentication uses DRF Token Authentication.
+- Swagger UI and OpenAPI use `drf-spectacular`, with schemas generated from our serializers. Documentation is public at `/api/docs/` and `/api/schema/`; API permissions stay the same.
 - Working hours are from 08:00 to 18:00, as specified in the task requirements. We accept timezone-aware datetimes and validate working hours using `Asia/Tehran`. There are no day-of-week restrictions.
 - The minimum and maximum reservation durations are not explicitly specified; we read them from the `MIN_RESERVATION_MINUTES` and `MAX_RESERVATION_MINUTES` environment variables in `.env`. The initial values are 15 and 180 minutes. Both must be positive, and the minimum must be less than or equal to the maximum.
 - Reservations in the past are not allowed. The start time must be before the end time, and the entire reservation must fall within the working hours of the same day.
