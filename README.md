@@ -31,9 +31,9 @@ The company timezone is `Asia/Tehran`; Django timezone support is enabled.
 
 ## Current scope
 
-Stages 1–4: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, and room availability search with shared time validation.
+Stages 1–5: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, and transactional reservation creation with idempotency.
 The initial migration installs `btree_gist` for the exclusion constraint. The local Compose database user has the required permissions.
-Reservation creation with idempotency and row locking, and cancellation will be added in the next stages. Availability already checks working hours, configured duration limits, active rooms, and sufficient capacity; reservation creation will reuse the time validator and recheck availability inside the transaction.
+Cancellation will be added in the next stage. Availability and reservation creation share the time rules; creation rechecks the time, active status, capacity, and conflicts after locking the room inside a database transaction.
 Design decisions are in [docs/DECISIONS.md](docs/DECISIONS.md); the task is in [docs/task.pdf](docs/task.pdf).
 
 ## Authentication and endpoints
@@ -61,6 +61,7 @@ Missing, invalid, or inactive-user tokens return `401` on protected endpoints; s
 | POST | `/api/rooms/` | Staff only |
 | PATCH | `/api/rooms/{id}/` | Staff only; change name, capacity, or active status |
 | GET | `/api/reservations/` | Own reservations, including cancelled; staff can see all |
+| POST | `/api/reservations/` | Any authenticated user; requires `Idempotency-Key`; creates their own reservation |
 | GET | `/api/reservations/{id}/` | Owner or staff; another employee's reservation returns `404` |
 
 Room fields are `id`, `name`, `capacity`, and `is_active`. Creating a room requires a unique `name` and positive `capacity`; `is_active` defaults to `true`.
@@ -83,6 +84,27 @@ The start must be before the end and cannot be in the past. Duration must be wit
 The response is a JSON array of active rooms with enough capacity and no overlapping confirmed reservation from any user. Cancelled reservations are ignored, and adjacent sessions do not overlap. No matches returns `200` with `[]`; invalid parameters return `400` with field errors or `non_field_errors`.
 Search does not reserve or lock a room; another user may reserve it before creation, so the creation service will check again.
 
+## Create a reservation
+
+After pulling this feature, run `python manage.py migrate` to create the idempotency table.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/reservations/ \
+  -H 'Authorization: Token <token>' \
+  -H 'Idempotency-Key: your-unique-request-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"room":1,"start_at":"2030-01-02T09:00:00+03:30","end_at":"2030-01-02T10:00:00+03:30","attendees_count":3}'
+```
+
+Use an existing room ID and a future interval. Required fields are `room`, `start_at`, `end_at`, and `attendees_count`; the same time rules as availability apply. The owner is the authenticated user, including for staff, and the initial status is `confirmed`. Client-supplied owner/status fields cannot override them.
+
+Creation returns `201` with the reservation fields listed above. An inactive room or insufficient capacity returns `400`, a missing room `404`, and an overlapping confirmed reservation `409`. Other invalid input returns `400`.
+
+`Idempotency-Key` is required: use 1–255 visible ASCII characters without spaces, for example a UUID. Keys are scoped to the authenticated user. Repeating the same key and effective data returns the original JSON response and `201`, including after the start time passes or the room/reservation changes. Changing the room, interval, or attendee count for a successful key returns `409`. Equivalent timezone offsets and numeric inputs are normalized before comparison.
+
+The key claim, reservation, and response snapshot are saved in one transaction. Identical in-flight keys wait for the first transaction, even across different rooms. Failed requests roll back their key claims and can be retried; only successful responses are retained, with no automatic expiry. A temporary empty claim is never committed by the service.
+Different keys targeting one room serialize on `select_for_update()`. The PostgreSQL exclusion constraint also protects against overlapping writes outside the service; only that constraint violation is translated to `409`.
+
 ## Tests
 
 With PostgreSQL running and the virtual environment active:
@@ -92,4 +114,6 @@ python manage.py test reservations.tests --noinput
 ```
 
 Tests cover database constraints, token login and token-authenticated API access, staff-only room writes, reservation list/detail isolation, and availability filtering and validation. Availability cases include configured duration limits, Tehran working hours, explicit timezones, all overlap shapes, adjacency, inactive/undersized rooms, and cancelled reservations. API tests use DRF's APIClient with real tokens and PostgreSQL; they do not bypass authentication.
-The database tests include 10 concurrent ORM inserts using separate PostgreSQL connections: one succeeds and nine are rejected by the exclusion constraint. Reservation creation/cancellation over HTTP, row locking in the service, and idempotency will be tested when those features are implemented. The database user must be able to create the separate test database.
+The database tests include 10 concurrent ORM inserts using separate PostgreSQL connections: one succeeds and nine are rejected by the exclusion constraint.
+Creation tests cover rollback, immutable response replay, and the database conflict fallback. `LiveServerTestCase` tests also use real local HTTP and PostgreSQL: 10 users get one `201` and nine `409`s; 10 identical keys get the same `201` response and one reservation. Separate backend PIDs are checked. Row-lock tests observe blocked `SELECT FOR UPDATE` queries via `pg_stat_activity` and verify that room changes and time are rechecked after waiting. The clock is fixed in these tests; authentication and database locking are real.
+The database user must be able to create the separate test database. Cancellation endpoint tests will be added with that feature.
