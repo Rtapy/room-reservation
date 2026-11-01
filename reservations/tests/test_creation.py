@@ -70,18 +70,17 @@ class ReservationCreationTests(APITestCase):
         self.assertEqual(response.data["id"], reservation.pk)
 
     def test_owner_and_initial_state_are_always_assigned_by_server(self):
-        response = self.reserve(user=self.other.pk, status="cancelled", cancelled_at=NOW.isoformat())
-        self.assertEqual(response.status_code, 201)
-        reservation = Reservation.objects.get()
-        self.assertEqual(reservation.user_id, self.employee.pk)
-        self.assertEqual(reservation.status, Reservation.Status.CONFIRMED)
-        self.assertIsNone(reservation.cancelled_at)
-
-    def test_staff_also_creates_their_own_reservation(self):
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.tokens[self.staff.pk]}")
-        response = self.reserve(user=self.employee.pk)
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(Reservation.objects.get().user_id, self.staff.pk)
+        for user, room in ((self.employee, self.room), (self.staff, self.other_room)):
+            with self.subTest(user=user.username):
+                self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.tokens[user.pk]}")
+                response = self.reserve(
+                    room=room.pk, user=self.other.pk, status="cancelled", cancelled_at=NOW.isoformat()
+                )
+                self.assertEqual(response.status_code, 201)
+                reservation = Reservation.objects.get(pk=response.data["id"])
+                self.assertEqual(reservation.user_id, user.pk)
+                self.assertEqual(reservation.status, Reservation.Status.CONFIRMED)
+                self.assertIsNone(reservation.cancelled_at)
 
     def test_unauthenticated_creation_is_rejected(self):
         for credentials in ({}, {"HTTP_AUTHORIZATION": "Token invalid"}):
@@ -97,15 +96,6 @@ class ReservationCreationTests(APITestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("Idempotency-Key", response.data)
         self.assert_no_writes()
-
-    def test_repeated_request_returns_original_response_without_duplicate(self):
-        first = self.reserve()
-        second = self.reserve()
-        self.assertEqual(first.status_code, 201)
-        self.assertEqual(second.status_code, 201)
-        self.assertEqual(first.json(), second.json())
-        self.assertEqual(Reservation.objects.count(), 1)
-        self.assertEqual(ReservationRequest.objects.count(), 1)
 
     def test_equivalent_timezone_and_numeric_inputs_replay_same_response(self):
         first = self.reserve()
@@ -140,8 +130,10 @@ class ReservationCreationTests(APITestCase):
         self.assertNotEqual(first.data["id"], second.data["id"])
         self.assertEqual(ReservationRequest.objects.count(), 2)
 
-    def test_replay_survives_past_time_room_changes_and_new_duration_settings(self):
+    def test_replay_survives_cancellation_and_changed_runtime_rules(self):
         first = self.reserve()
+        cancelled = self.client.post(reverse("reservation-cancel", args=[first.data["id"]]))
+        self.assertEqual(cancelled.status_code, 200)
         self.room.is_active = False
         self.room.capacity = 1
         self.room.save()
@@ -149,14 +141,6 @@ class ReservationCreationTests(APITestCase):
             with override_settings(MIN_RESERVATION_MINUTES=15, MAX_RESERVATION_MINUTES=30):
                 second = self.reserve()
         self.assertEqual(first.status_code, 201)
-        self.assertEqual(second.status_code, 201)
-        self.assertEqual(first.json(), second.json())
-
-    def test_replay_is_snapshot_even_if_reservation_is_cancelled(self):
-        first = self.reserve()
-        cancelled = self.client.post(reverse("reservation-cancel", args=[first.data["id"]]))
-        self.assertEqual(cancelled.status_code, 200)
-        second = self.reserve()
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.json(), second.json())
         self.assertEqual(Reservation.objects.get().status, Reservation.Status.CANCELLED)
@@ -195,11 +179,9 @@ class ReservationCreationTests(APITestCase):
         self.assertEqual(self.reserve(key="new-reservation").status_code, 201)
         self.assertEqual(Reservation.objects.count(), 2)
 
-    def test_missing_room_returns_404_without_consuming_key(self):
+    def test_rejected_room_conditions_do_not_consume_key(self):
         self.assertEqual(self.reserve(room=self.other_room.pk + 1000).status_code, 404)
         self.assert_no_writes()
-
-    def test_inactive_or_insufficient_room_rejected_without_consuming_key(self):
         self.room.is_active = False
         self.room.save()
         self.assertEqual(self.reserve().status_code, 400)
@@ -213,7 +195,6 @@ class ReservationCreationTests(APITestCase):
     def test_invalid_creation_fields_are_rejected(self):
         for field, value in (
             ("room", 0), ("room", "invalid"), ("attendees_count", 0),
-            ("attendees_count", -1), ("attendees_count", "2.5"),
             ("start_at", "invalid"), ("start_at", "2030-01-02T09:00:00"),
         ):
             with self.subTest(field=field, value=value):
@@ -230,24 +211,14 @@ class ReservationCreationTests(APITestCase):
             self.assertIn(field, response.data)
         self.assert_no_writes()
 
-    def test_shared_time_rules_are_enforced_during_creation(self):
+    def test_creation_applies_shared_time_validation(self):
         for start, end in (
-            (START, START), (START, START - timedelta(minutes=1)),
             (START - timedelta(days=2), START - timedelta(days=2) + timedelta(hours=1)),
-            (START, START + timedelta(minutes=14)),
-            (START, START + timedelta(minutes=181)),
             (START.replace(hour=7), START.replace(hour=8)),
-            (START.replace(hour=17, minute=45), START.replace(hour=18, minute=1)),
-            (START.replace(hour=23, minute=50), (START + timedelta(days=1)).replace(hour=0, minute=10)),
         ):
             with self.subTest(start=start, end=end):
                 self.assertEqual(self.reserve(start_at=start.isoformat(), end_at=end.isoformat()).status_code, 400)
         self.assert_no_writes()
-
-    @override_settings(MIN_RESERVATION_MINUTES=30, MAX_RESERVATION_MINUTES=45)
-    def test_creation_uses_configured_duration_limits(self):
-        self.assertEqual(self.reserve(end_at=(START + timedelta(minutes=15)).isoformat()).status_code, 400)
-        self.assertEqual(self.reserve(end_at=(START + timedelta(minutes=30)).isoformat()).status_code, 201)
 
     def test_database_exclusion_violation_is_also_translated_to_409(self):
         self.assertEqual(self.reserve().status_code, 201)

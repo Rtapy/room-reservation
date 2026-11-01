@@ -31,7 +31,7 @@ The company timezone is `Asia/Tehran`; Django timezone support is enabled.
 
 ## Current scope
 
-Stages 1–6: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, transactional reservation creation with idempotency, and soft cancellation.
+Stages 1–7: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, transactional reservation creation with idempotency, soft cancellation, and a reviewed essential test suite.
 The initial migration installs `btree_gist` for the exclusion constraint. The local Compose database user has the required permissions.
 Availability and reservation creation share the time rules; creation rechecks the time, active status, capacity, and conflicts after locking the room inside a database transaction.
 Design decisions are in [docs/DECISIONS.md](docs/DECISIONS.md); the task is in [docs/task.pdf](docs/task.pdf).
@@ -125,8 +125,7 @@ With PostgreSQL running and the virtual environment active:
 python manage.py test reservations.tests --noinput
 ```
 
-Tests cover database constraints, token login and token-authenticated API access, staff-only room writes, reservation list/detail isolation, and availability filtering and validation. Availability cases include configured duration limits, Tehran working hours, explicit timezones, all overlap shapes, adjacency, inactive/undersized rooms, and cancelled reservations. API tests use DRF's APIClient with real tokens and PostgreSQL; they do not bypass authentication.
-The database tests include 10 concurrent ORM inserts using separate PostgreSQL connections: one succeeds and nine are rejected by the exclusion constraint.
-Creation tests cover rollback, immutable response replay, and the database conflict fallback. `LiveServerTestCase` tests also use real local HTTP and PostgreSQL: 10 users get one `201` and nine `409`s; 10 identical keys get the same `201` response and one reservation. Separate backend PIDs are checked. Row-lock tests observe blocked `SELECT FOR UPDATE` queries via `pg_stat_activity` and verify that room changes and time are rechecked after waiting. The clock is fixed in these tests; authentication and database locking are real.
-Cancellation adds five API tests for the owner, staff, another user/missing ID, unauthenticated access, and repeated cancellation. Existing creation tests also exercise the cancellation endpoint to verify that it frees the interval and preserves the creation response snapshot.
+The curated suite has 58 test methods: 42 APIClient tests with real tokens and PostgreSQL, 7 database/model tests, 6 real local HTTP concurrency tests, and 3 shared-validator tests without a database.
+The conflict tests include 10 independent ORM writers and 10 HTTP users; only one overlapping reservation succeeds. Concurrent identical keys replay one response. Lock-wait tests check fresh room eligibility and time after waiting. Cancellation tests preserve ownership, history, the first cancellation timestamp, and the freed interval.
+See [the complete test audit and project status](docs/TEST_REPORT.md) for the before/after inventory, every removal/merge decision, the purpose of each retained test, actual execution evidence, and verification limits.
 The database user must be able to create the separate test database.
