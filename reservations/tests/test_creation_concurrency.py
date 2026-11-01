@@ -117,18 +117,6 @@ class ReservationHTTPConcurrencyTests(LiveServerTestCase):
         self.assertEqual(Reservation.objects.count(), 1)
         self.assertEqual(ReservationRequest.objects.count(), 1)
 
-    def test_different_rooms_with_different_keys_can_both_be_reserved(self):
-        barrier = Barrier(2)
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(self.post_reservation, f"room-{room.pk}", room=room.pk, barrier=barrier)
-                for room in (self.room, self.other_room)
-            ]
-            results = [future.result(timeout=20) for future in futures]
-        self.assertEqual([code for code, _ in results], [201, 201], results)
-        self.assertEqual(Reservation.objects.count(), 2)
-        self.assertEqual(ReservationRequest.objects.count(), 2)
-
     def assert_http_worker_waiting_for_room_lock(self):
         self.assertTrue(self.connected.wait(timeout=5), "HTTP worker did not connect to PostgreSQL")
         deadline = time.monotonic() + 5

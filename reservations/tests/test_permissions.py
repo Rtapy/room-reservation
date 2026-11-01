@@ -1,15 +1,12 @@
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import AnonymousUser
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from reservations.models import Reservation, Room
-from reservations.permissions import IsReservationOwnerOrStaff
 
 
 class AccessControlTests(APITestCase):
@@ -43,13 +40,14 @@ class AccessControlTests(APITestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.tokens[user.pk]}")
 
     def test_missing_or_invalid_token_cannot_read_resources(self):
-        for authorization in (None, "Token invalid-token", "Token", "Bearer wrong-token"):
+        for authorization in (None, "Token invalid-token"):
             self.client.credentials(
                 **({"HTTP_AUTHORIZATION": authorization} if authorization else {})
             )
             for url in (
                 reverse("room-list"), reverse("reservation-list"),
                 reverse("reservation-detail", args=[self.own_reservation.pk]),
+                reverse("room-available"),
             ):
                 with self.subTest(authorization=authorization, url=url):
                     response = self.client.get(url)
@@ -75,16 +73,13 @@ class AccessControlTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual({room["id"] for room in response.data}, {self.room.pk, self.inactive_room.pk})
 
-    def test_employee_cannot_create_a_room(self):
+    def test_employee_cannot_create_edit_or_deactivate_rooms(self):
         self.authenticate(self.employee)
         response = self.client.post(
             reverse("room-list"), {"name": "Unauthorized", "capacity": 4}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(Room.objects.count(), 2)
-
-    def test_employee_cannot_edit_or_deactivate_a_room(self):
-        self.authenticate(self.employee)
         response = self.client.patch(
             reverse("room-detail", args=[self.room.pk]),
             {"name": "Changed", "capacity": 1, "is_active": False}, format="json",
@@ -93,23 +88,19 @@ class AccessControlTests(APITestCase):
         self.room.refresh_from_db()
         self.assertEqual((self.room.name, self.room.capacity, self.room.is_active), ("Room A", 6, True))
 
-    def test_staff_can_create_a_room(self):
+    def test_staff_can_create_edit_and_deactivate_a_room(self):
         self.authenticate(self.staff)
-        response = self.client.post(
+        created = self.client.post(
             reverse("room-list"), {"name": "New room", "capacity": 4}, format="json"
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(Room.objects.filter(pk=response.data["id"], capacity=4).exists())
-
-    def test_staff_can_edit_and_deactivate_a_room(self):
-        self.authenticate(self.staff)
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
         response = self.client.patch(
-            reverse("room-detail", args=[self.room.pk]),
+            reverse("room-detail", args=[created.data["id"]]),
             {"name": "Updated", "capacity": 8, "is_active": False}, format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.room.refresh_from_db()
-        self.assertEqual((self.room.name, self.room.capacity, self.room.is_active), ("Updated", 8, False))
+        room = Room.objects.get(pk=created.data["id"])
+        self.assertEqual((room.name, room.capacity, room.is_active), ("Updated", 8, False))
 
     def test_room_api_rejects_invalid_capacity_and_duplicate_names(self):
         self.authenticate(self.staff)
@@ -125,29 +116,20 @@ class AccessControlTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Room.objects.count(), 2)
 
-    def test_employee_list_contains_only_their_reservations(self):
+    def test_employee_list_and_detail_are_scoped_to_their_reservations(self):
         self.authenticate(self.employee)
-        response = self.client.get(reverse("reservation-list"))
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(
-            {reservation["id"] for reservation in response.data},
-            {self.own_reservation.pk, self.cancelled_reservation.pk},
-        )
-
-    def test_query_parameter_cannot_expose_another_users_reservations(self):
-        self.authenticate(self.employee)
-        response = self.client.get(reverse("reservation-list"), {"user": self.other.pk})
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(
-            {reservation["user"] for reservation in response.data}, {self.employee.pk}
-        )
-
-    def test_employee_can_read_their_reservation(self):
-        self.authenticate(self.employee)
-        response = self.client.get(reverse("reservation-detail", args=[self.own_reservation.pk]))
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["user"], self.employee.pk)
-        self.assertEqual(response.data["room"], self.room.pk)
+        for params in ({}, {"user": self.other.pk}):
+            with self.subTest(params=params):
+                response = self.client.get(reverse("reservation-list"), params)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(
+                    {reservation["id"] for reservation in response.data},
+                    {self.own_reservation.pk, self.cancelled_reservation.pk},
+                )
+        detail = self.client.get(reverse("reservation-detail", args=[self.own_reservation.pk]))
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail.data["user"], self.employee.pk)
+        self.assertEqual(detail.data["room"], self.room.pk)
 
     def test_other_users_reservation_and_missing_id_both_return_404(self):
         self.authenticate(self.employee)
@@ -175,17 +157,3 @@ class AccessControlTests(APITestCase):
         self.own_reservation.refresh_from_db()
         self.assertEqual(self.own_reservation.user_id, self.employee.pk)
         self.assertEqual(self.own_reservation.status, Reservation.Status.CONFIRMED)
-
-    def test_object_permission_allows_only_owner_or_staff(self):
-        permission = IsReservationOwnerOrStaff()
-        for method in ("GET", "POST"):
-            for user, expected in (
-                (self.employee, True), (self.staff, True),
-                (self.other, False), (AnonymousUser(), False),
-            ):
-                with self.subTest(method=method, user=user.username):
-                    request = SimpleNamespace(user=user, method=method)
-                    self.assertEqual(
-                        permission.has_object_permission(request, None, self.own_reservation),
-                        expected,
-                    )

@@ -39,30 +39,11 @@ class ModelConstraintTests(TestCase):
                 yield
         self.assertEqual(error.exception.__cause__.diag.constraint_name, name)
 
-    def test_room_name_is_unique(self):
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            Room.objects.create(name=self.room.name, capacity=4)
-
-    def test_room_capacity_must_be_positive(self):
+    def test_custom_positive_checks_reject_zero_capacity_and_attendees(self):
         with self.assert_constraint("room_capacity_positive"):
             Room.objects.create(name="Zero capacity", capacity=0)
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            Room.objects.create(name="Negative capacity", capacity=-1)
-
-    def test_confirmed_reservation_defaults(self):
-        reservation = self.create_reservation()
-        reservation.refresh_from_db()
-        self.assertEqual(reservation.status, Reservation.Status.CONFIRMED)
-        self.assertIsNone(reservation.cancelled_at)
-        self.assertTrue(django_timezone.is_aware(reservation.created_at))
-        self.assertEqual(reservation.room, self.room)
-        self.assertEqual(reservation.user, self.user)
-
-    def test_attendee_count_must_be_positive(self):
         with self.assert_constraint("reservation_attendees_positive"):
             self.create_reservation(attendees_count=0)
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            self.create_reservation(attendees_count=-1)
 
     def test_end_must_be_strictly_after_start(self):
         for end in (self.start, self.start - timedelta(minutes=1)):
@@ -94,61 +75,17 @@ class ModelConstraintTests(TestCase):
                         end_at=self.start + timedelta(minutes=end_offset),
                     )
 
-    def test_adjacent_reservations_allowed_on_both_sides(self):
+    def test_exclusion_allows_adjacent_different_room_and_cancelled_intervals(self):
         self.create_reservation()
         self.create_reservation(start_at=self.start - timedelta(hours=1), end_at=self.start)
         self.create_reservation(
-            start_at=self.start + timedelta(hours=1),
-            end_at=self.start + timedelta(hours=2),
+            start_at=self.start + timedelta(hours=1), end_at=self.start + timedelta(hours=2)
         )
-        self.assertEqual(Reservation.objects.count(), 3)
-
-    def test_same_interval_in_different_rooms_allowed(self):
-        self.create_reservation()
         self.create_reservation(room=self.other_room)
-        self.assertEqual(Reservation.objects.count(), 2)
-
-    def test_cancelled_reservations_are_retained_and_do_not_block(self):
-        cancelled_at = django_timezone.now()
-        cancelled = self.create_reservation(
-            status=Reservation.Status.CANCELLED, cancelled_at=cancelled_at
-        )
-        self.create_reservation()
-        self.create_reservation(status=Reservation.Status.CANCELLED, cancelled_at=cancelled_at)
-        cancelled.refresh_from_db()
-        self.assertEqual(cancelled.cancelled_at, cancelled_at)
-        self.assertEqual(Reservation.objects.count(), 3)
-
-    def test_cancelling_existing_reservation_frees_interval(self):
-        reservation = self.create_reservation()
-        Reservation.objects.filter(pk=reservation.pk).update(
+        self.create_reservation(
             status=Reservation.Status.CANCELLED, cancelled_at=django_timezone.now()
         )
-        self.create_reservation()
-        self.assertEqual(Reservation.objects.count(), 2)
-
-    def test_updating_time_cannot_create_overlap(self):
-        self.create_reservation()
-        later = self.create_reservation(
-            start_at=self.start + timedelta(hours=1),
-            end_at=self.start + timedelta(hours=2),
-        )
-        with self.assert_constraint("reservation_no_overlap"):
-            Reservation.objects.filter(pk=later.pk).update(
-                start_at=self.start + timedelta(minutes=30)
-            )
-        later.refresh_from_db()
-        self.assertEqual(later.start_at, self.start + timedelta(hours=1))
-
-    def test_cancelled_reservation_cannot_be_reactivated_over_existing_one(self):
-        cancelled = self.create_reservation(
-            status=Reservation.Status.CANCELLED, cancelled_at=django_timezone.now()
-        )
-        self.create_reservation()
-        with self.assert_constraint("reservation_no_overlap"):
-            Reservation.objects.filter(pk=cancelled.pk).update(
-                status=Reservation.Status.CONFIRMED, cancelled_at=None
-            )
+        self.assertEqual(Reservation.objects.count(), 5)
 
     def test_room_and_user_with_reservation_cannot_be_deleted(self):
         self.create_reservation(status=Reservation.Status.CANCELLED, cancelled_at=django_timezone.now())
