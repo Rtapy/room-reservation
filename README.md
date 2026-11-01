@@ -1,8 +1,11 @@
 # Meeting room reservations
 
-Django + Django REST Framework with PostgreSQL. Python 3.12+ and Docker Compose are required for the local setup below.
+Django REST Framework API with PostgreSQL for room availability, reservations, and soft cancellation.
+See [design decisions](docs/DECISIONS.md) and the [task](docs/task.pdf).
 
 ## Run locally
+
+Requires Python 3.12+ and Docker Compose.
 
 ```bash
 python3 -m venv .venv
@@ -11,131 +14,65 @@ pip install -r requirements.txt
 cp .env.example .env
 docker compose up -d --wait db
 python manage.py migrate
-python manage.py check --database default
 python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Django runs on `http://127.0.0.1:8000/`. The built-in admin is at `/admin/`.
-PostgreSQL is exposed only on `127.0.0.1:55432`; change `POSTGRES_PORT` in `.env` if that port is in use.
-Use `docker compose stop` to stop PostgreSQL while keeping its data.
+The API runs at `http://127.0.0.1:8000/`; Django admin is at `/admin/`.
+PostgreSQL uses `127.0.0.1:55432` by default (`POSTGRES_PORT` in `.env`). Stop it with `docker compose stop` to keep its data.
+The initial migration installs `btree_gist`; the Compose database user has the required permissions.
 
-## Configuration
+Settings load the root `.env`; existing environment variables take precedence. `.env.example` contains local development credentials.
+`MIN_RESERVATION_MINUTES` and `MAX_RESERVATION_MINUTES` default to 15 and 180; both must be positive integers with minimum <= maximum.
 
-Settings load `.env` from the project root. Existing environment variables take precedence.
-Use `.env.example` as the configuration reference; `.env` is ignored by Git.
-The example credentials and secret key are for local development only.
+## Users and Swagger
 
-`MIN_RESERVATION_MINUTES` and `MAX_RESERVATION_MINUTES` configure the session duration limits, initially 15 and 180 minutes. Both must be positive integers, with the minimum no greater than the maximum. Invalid values prevent startup.
-The company timezone is `Asia/Tehran`; Django timezone support is enabled.
+Use the superuser created above to add employees under **Django admin → Users → Add**.
+Employees have `is_staff=False` and `is_superuser=False`. API admins need `is_staff=True`; managing users in Django admin requires separate permissions or a superuser. There is no registration endpoint.
 
-## Current scope
+Open [Swagger UI](http://127.0.0.1:8000/api/docs/):
 
-Stages 1–7 plus API documentation: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, transactional reservation creation with idempotency, soft cancellation, a reviewed essential test suite, and Swagger/OpenAPI for every current endpoint.
-The initial migration installs `btree_gist` for the exclusion constraint. The local Compose database user has the required permissions.
-Availability and reservation creation share the time rules; creation rechecks the time, active status, capacity, and conflicts after locking the room inside a database transaction.
-Design decisions are in [docs/DECISIONS.md](docs/DECISIONS.md); the task is in [docs/task.pdf](docs/task.pdf).
+1. Execute `POST /api/auth/token/` with the user's username and password.
+2. Click **Authorize** and enter `Token YOUR_TOKEN`, replacing `YOUR_TOKEN` with the returned token. Include `Token` and one space; omit quotes and angle brackets.
+3. Use **Try it out** to send requests. Logging into Django admin or obtaining a token does not automatically authorize Swagger.
 
-## Authentication and endpoints
+Protected requests use `Authorization: Token YOUR_TOKEN`.
+Swagger and [OpenAPI](http://127.0.0.1:8000/api/schema/) are public; Swagger's JavaScript/CSS need internet access to load from the CDN.
 
-Create users with `createsuperuser` or Django admin; there is no registration endpoint.
-Admin API permissions use `is_staff`, including staff users who are not superusers.
+## Endpoints
 
-Get a token with existing user credentials:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/auth/token/ \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"your-username","password":"your-password"}'
-```
-
-The response is `{"token":"..."}`. Send `Authorization: Token <token>` on other API requests.
-Repeated login returns the same token. Invalid or inactive credentials return `400`.
-Missing, invalid, or inactive-user tokens return `401` on protected endpoints; session login does not authenticate API requests.
-
-| Method | Endpoint | Access |
+| Method | Endpoint | Access / purpose |
 | --- | --- | --- |
-| POST | `/api/auth/token/` | User credentials; no token required |
-| GET | `/api/rooms/` | Any authenticated user; includes inactive rooms |
-| GET | `/api/rooms/available/` | Any authenticated user; requires `start_at`, `end_at`, and `attendees_count` |
-| POST | `/api/rooms/` | Staff only |
-| PATCH | `/api/rooms/{id}/` | Staff only; change name, capacity, or active status |
-| GET | `/api/reservations/` | Own reservations, including cancelled; staff can see all |
-| POST | `/api/reservations/` | Any authenticated user; requires `Idempotency-Key`; creates their own reservation |
-| GET | `/api/reservations/{id}/` | Owner or staff; another employee's reservation returns `404` |
-| POST | `/api/reservations/{id}/cancel/` | Owner or staff; soft cancellation |
+| POST | `/api/auth/token/` | Existing user credentials → token |
+| GET | `/api/rooms/` | Authenticated; includes inactive rooms |
+| POST | `/api/rooms/` | Staff; create a room |
+| PATCH | `/api/rooms/{id}/` | Staff; edit or deactivate a room |
+| GET | `/api/rooms/available/` | Authenticated; search available rooms |
+| GET | `/api/reservations/` | Own reservations; staff see all |
+| POST | `/api/reservations/` | Authenticated; create own reservation |
+| GET | `/api/reservations/{id}/` | Owner or staff; read a reservation |
+| POST | `/api/reservations/{id}/cancel/` | Owner or staff; soft cancellation, no body |
 
-Room fields are `id`, `name`, `capacity`, and `is_active`. Creating a room requires a unique `name` and positive `capacity`; `is_active` defaults to `true`.
-Reservation responses include `id`, `room`, `user`, `start_at`, `end_at`, `attendees_count`, `status`, `created_at`, and `cancelled_at`; `room` and `user` are IDs. Lists are JSON arrays.
-Employees attempting room writes receive `403`. Room deletion and direct reservation updates/deletion are not exposed.
+Create a room with `{"name":"Meeting room 1","capacity":8,"is_active":true}`. Name must be unique; capacity must be positive. `is_active` defaults to `true`.
 
-## Swagger / OpenAPI
+Availability requires query parameters `start_at`, `end_at`, and `attendees_count`. It returns active rooms with enough capacity and no overlapping confirmed reservation; no matches returns `[]`. Search does not hold a room.
 
-After installing `requirements.txt` and starting Django, open [Swagger UI](http://127.0.0.1:8000/api/docs/).
-The [OpenAPI schema](http://127.0.0.1:8000/api/schema/) is available as YAML, or JSON with `?format=json`.
-Both documentation endpoints are public. The business endpoints retain their existing token and role permissions.
+Create a reservation with a required `Idempotency-Key` header (for example, a UUID) and this JSON body:
 
-1. Execute `POST /api/auth/token/` with an existing user's credentials.
-2. Click **Authorize**, enter `Token <token>` (including the `Token ` prefix), and authorize.
-3. Use **Try it out** on the protected endpoints. Creating a reservation also requires `Idempotency-Key`.
-
-All 9 API operations include their inputs, success/error responses, and access rules. Availability has three required query parameters; cancellation requires no body. Examples need an existing room ID and a future interval within your configured duration limits.
-The schema is generated from the current serializers with [drf-spectacular](https://drf-spectacular.readthedocs.io/en/latest/readme.html); custom contracts are annotated in `reservations/schema.py`.
-Swagger UI loads its JavaScript and CSS from the package's default CDN, so the browser needs internet access. Schema generation and download do not depend on the CDN.
-
-Validate/export the schema without a database connection:
-
-```bash
-python manage.py spectacular --file /tmp/reservations-openapi.yaml --validate --fail-on-warn
+```json
+{
+  "room": 1,
+  "start_at": "2030-01-02T09:00:00+03:30",
+  "end_at": "2030-01-02T10:00:00+03:30",
+  "attendees_count": 3
+}
 ```
 
-## Availability search
+Use an existing room ID and a future interval. Both datetimes need an offset or `Z`; URL-encode query values containing `+`. Time rules and replay behavior are in [DECISIONS.md](docs/DECISIONS.md).
+Lists return JSON arrays; reservation `room` and `user` fields are IDs. Swagger documents the full request and response fields.
 
-```bash
-curl -G http://127.0.0.1:8000/api/rooms/available/ \
-  -H 'Authorization: Token <token>' \
-  --data-urlencode 'start_at=2030-01-02T09:00:00+03:30' \
-  --data-urlencode 'end_at=2030-01-02T10:00:00+03:30' \
-  --data-urlencode 'attendees_count=3'
-```
-
-Choose a future date when running this example. Both datetimes require an explicit timezone offset or `Z`; use URL encoding to preserve `+` in offsets. The attendee count must be a positive integer.
-The start must be before the end and cannot be in the past. Duration must be within the configured limits, including their boundaries. The entire session must fit within 08:00–18:00 on the same date in `Asia/Tehran`, regardless of the input offset. There is no weekday restriction.
-
-The response is a JSON array of active rooms with enough capacity and no overlapping confirmed reservation from any user. Cancelled reservations are ignored, and adjacent sessions do not overlap. No matches returns `200` with `[]`; invalid parameters return `400` with field errors or `non_field_errors`.
-Search does not reserve or lock a room; another user may reserve it before creation, so the creation service will check again.
-
-## Create a reservation
-
-After pulling this feature, run `python manage.py migrate` to create the idempotency table.
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/reservations/ \
-  -H 'Authorization: Token <token>' \
-  -H 'Idempotency-Key: your-unique-request-key' \
-  -H 'Content-Type: application/json' \
-  -d '{"room":1,"start_at":"2030-01-02T09:00:00+03:30","end_at":"2030-01-02T10:00:00+03:30","attendees_count":3}'
-```
-
-Use an existing room ID and a future interval. Required fields are `room`, `start_at`, `end_at`, and `attendees_count`; the same time rules as availability apply. The owner is the authenticated user, including for staff, and the initial status is `confirmed`. Client-supplied owner/status fields cannot override them.
-
-Creation returns `201` with the reservation fields listed above. An inactive room or insufficient capacity returns `400`, a missing room `404`, and an overlapping confirmed reservation `409`. Other invalid input returns `400`.
-
-`Idempotency-Key` is required: use 1–255 visible ASCII characters without spaces, for example a UUID. Keys are scoped to the authenticated user. Repeating the same key and effective data returns the original JSON response and `201`, including after the start time passes or the room/reservation changes. Changing the room, interval, or attendee count for a successful key returns `409`. Equivalent timezone offsets and numeric inputs are normalized before comparison.
-
-The key claim, reservation, and response snapshot are saved in one transaction. Identical in-flight keys wait for the first transaction, even across different rooms. Failed requests roll back their key claims and can be retried; only successful responses are retained, with no automatic expiry. A temporary empty claim is never committed by the service.
-Different keys targeting one room serialize on `select_for_update()`. The PostgreSQL exclusion constraint also protects against overlapping writes outside the service; only that constraint violation is translated to `409`.
-
-## Cancel a reservation
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/reservations/1/cancel/ \
-  -H 'Authorization: Token <token>'
-```
-
-No request body or `Idempotency-Key` is needed. The owner or a staff user receives `200` with the reservation, its `cancelled` status, and `cancelled_at`. The row stays in the database and remains visible to authorized users; its interval is available for a new reservation.
-Repeating cancellation returns the same state and preserves the first cancellation timestamp. A conditional status update makes the transition atomic. Another employee's reservation and a missing ID both return `404`; unauthenticated requests return `401`.
-The original creation response snapshot is kept: replaying its creation key still returns that original response and does not reactivate the cancelled reservation.
+Creation and successful replay return `201`; cancellation and repeated cancellation return `200`.
+Errors: `400` invalid input, inactive room, or insufficient capacity; `401` missing/invalid authentication; `403` employee room writes; `404` missing room/reservation or another employee's reservation; `409` overlap or reuse of a successful key with different data.
 
 ## Tests
 
@@ -145,7 +82,5 @@ With PostgreSQL running and the virtual environment active:
 python manage.py test reservations.tests --noinput
 ```
 
-The suite has 60 test methods: the 58 reviewed behavioral tests (42 APIClient tests with real tokens and PostgreSQL, 7 database/model tests, 6 real local HTTP concurrency tests, and 3 shared-validator tests without a database), plus 2 documentation tests without a database. The documentation tests check the generated contract for all 9 operations and the public Swagger page; they do not repeat the business-rule tests.
-The conflict tests include 10 independent ORM writers and 10 HTTP users; only one overlapping reservation succeeds. Concurrent identical keys replay one response. Lock-wait tests check fresh room eligibility and time after waiting. Cancellation tests preserve ownership, history, the first cancellation timestamp, and the freed interval.
-See [the complete test audit and project status](docs/TEST_REPORT.md) for the before/after inventory, every removal/merge decision, the purpose of each retained test, actual execution evidence, and verification limits.
 The database user must be able to create the separate test database.
+Tests cover time/capacity rules, conflicts, permissions, cancellation, idempotency, and API documentation. Concurrency tests use real PostgreSQL connections and local HTTP: 10 overlapping requests with different keys yield one `201` and nine `409`s; identical concurrent keys replay one successful creation.
