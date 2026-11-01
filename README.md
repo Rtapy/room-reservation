@@ -31,9 +31,9 @@ The company timezone is `Asia/Tehran`; Django timezone support is enabled.
 
 ## Current scope
 
-Stages 1–5: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, and transactional reservation creation with idempotency.
+Stages 1–6: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, availability search, transactional reservation creation with idempotency, and soft cancellation.
 The initial migration installs `btree_gist` for the exclusion constraint. The local Compose database user has the required permissions.
-Cancellation will be added in the next stage. Availability and reservation creation share the time rules; creation rechecks the time, active status, capacity, and conflicts after locking the room inside a database transaction.
+Availability and reservation creation share the time rules; creation rechecks the time, active status, capacity, and conflicts after locking the room inside a database transaction.
 Design decisions are in [docs/DECISIONS.md](docs/DECISIONS.md); the task is in [docs/task.pdf](docs/task.pdf).
 
 ## Authentication and endpoints
@@ -63,6 +63,7 @@ Missing, invalid, or inactive-user tokens return `401` on protected endpoints; s
 | GET | `/api/reservations/` | Own reservations, including cancelled; staff can see all |
 | POST | `/api/reservations/` | Any authenticated user; requires `Idempotency-Key`; creates their own reservation |
 | GET | `/api/reservations/{id}/` | Owner or staff; another employee's reservation returns `404` |
+| POST | `/api/reservations/{id}/cancel/` | Owner or staff; soft cancellation |
 
 Room fields are `id`, `name`, `capacity`, and `is_active`. Creating a room requires a unique `name` and positive `capacity`; `is_active` defaults to `true`.
 Reservation responses include `id`, `room`, `user`, `start_at`, `end_at`, `attendees_count`, `status`, `created_at`, and `cancelled_at`; `room` and `user` are IDs. Lists are JSON arrays.
@@ -105,6 +106,17 @@ Creation returns `201` with the reservation fields listed above. An inactive roo
 The key claim, reservation, and response snapshot are saved in one transaction. Identical in-flight keys wait for the first transaction, even across different rooms. Failed requests roll back their key claims and can be retried; only successful responses are retained, with no automatic expiry. A temporary empty claim is never committed by the service.
 Different keys targeting one room serialize on `select_for_update()`. The PostgreSQL exclusion constraint also protects against overlapping writes outside the service; only that constraint violation is translated to `409`.
 
+## Cancel a reservation
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/reservations/1/cancel/ \
+  -H 'Authorization: Token <token>'
+```
+
+No request body or `Idempotency-Key` is needed. The owner or a staff user receives `200` with the reservation, its `cancelled` status, and `cancelled_at`. The row stays in the database and remains visible to authorized users; its interval is available for a new reservation.
+Repeating cancellation returns the same state and preserves the first cancellation timestamp. A conditional status update makes the transition atomic. Another employee's reservation and a missing ID both return `404`; unauthenticated requests return `401`.
+The original creation response snapshot is kept: replaying its creation key still returns that original response and does not reactivate the cancelled reservation.
+
 ## Tests
 
 With PostgreSQL running and the virtual environment active:
@@ -116,4 +128,5 @@ python manage.py test reservations.tests --noinput
 Tests cover database constraints, token login and token-authenticated API access, staff-only room writes, reservation list/detail isolation, and availability filtering and validation. Availability cases include configured duration limits, Tehran working hours, explicit timezones, all overlap shapes, adjacency, inactive/undersized rooms, and cancelled reservations. API tests use DRF's APIClient with real tokens and PostgreSQL; they do not bypass authentication.
 The database tests include 10 concurrent ORM inserts using separate PostgreSQL connections: one succeeds and nine are rejected by the exclusion constraint.
 Creation tests cover rollback, immutable response replay, and the database conflict fallback. `LiveServerTestCase` tests also use real local HTTP and PostgreSQL: 10 users get one `201` and nine `409`s; 10 identical keys get the same `201` response and one reservation. Separate backend PIDs are checked. Row-lock tests observe blocked `SELECT FOR UPDATE` queries via `pg_stat_activity` and verify that room changes and time are rechecked after waiting. The clock is fixed in these tests; authentication and database locking are real.
-The database user must be able to create the separate test database. Cancellation endpoint tests will be added with that feature.
+Cancellation adds five API tests for the owner, staff, another user/missing ID, unauthenticated access, and repeated cancellation. Existing creation tests also exercise the cancellation endpoint to verify that it frees the interval and preserves the creation response snapshot.
+The database user must be able to create the separate test database.

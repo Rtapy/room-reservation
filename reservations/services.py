@@ -19,6 +19,16 @@ class ReservationConflict(APIException):
     default_code = "reservation_conflict"
 
 
+def cancel_reservation(*, reservation):
+    # A conditional UPDATE preserves the first cancellation timestamp, even
+    # when several callers initially read the reservation as confirmed.
+    Reservation.objects.filter(
+        pk=reservation.pk, status=Reservation.Status.CONFIRMED
+    ).update(status=Reservation.Status.CANCELLED, cancelled_at=timezone.now())
+    reservation.refresh_from_db()
+    return reservation
+
+
 def create_reservation(*, user, idempotency_key, room, start_at, end_at, attendees_count):
     if not isinstance(idempotency_key, str) or not re.fullmatch(r"[!-~]{1,255}", idempotency_key):
         raise ValidationError({
