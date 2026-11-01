@@ -1,0 +1,18 @@
+# Decisions
+
+- A simple monolithic architecture using Django, DRF, and a single `reservations` app is sufficient. The database is PostgreSQL, and authentication uses DRF Token Authentication.
+- Working hours are from 08:00 to 18:00, as specified in the task requirements. We accept timezone-aware datetimes and validate working hours using `Asia/Tehran`. There are no day-of-week restrictions.
+- The minimum and maximum reservation durations are not explicitly specified; we read them from the `MIN_RESERVATION_MINUTES` and `MAX_RESERVATION_MINUTES` environment variables in `.env`. The initial values are 15 and 180 minutes. Both must be positive, and the minimum must be less than or equal to the maximum.
+- Reservations in the past are not allowed. The start time must be before the end time, and the entire reservation must fall within the working hours of the same day.
+- Room capacity and the number of attendees must be positive. An inactive room or a room with a capacity lower than the number of attendees cannot accept new reservations.
+- Time intervals are `[start_at, end_at)`, so a reservation starting exactly when the previous reservation ends is allowed.
+- To prevent concurrent reservations, we lock the room record using `select_for_update()` inside `transaction.atomic()`. We then check whether the room is active, verify its capacity, check for overlapping reservations, and create the reservation. All reservation creation paths follow the same logic.
+- To also enforce this at the database level, we use an `ExclusionConstraint` with the `btree_gist` extension to prevent overlapping active reservations for the same room. Conflicts return a `409` response, whether detected by the service or by the database constraint.
+- Creating a reservation requires an `Idempotency-Key`. The key is unique per user and stored in the database. Both the key and the reservation are saved within the same transaction. Repeating the same key with the same data returns the previous response; using the same key with different data returns `409`. Concurrent requests with the same key also create only one reservation.
+- Available rooms are searched using `start_at`, `end_at`, and `attendees_count`. Search results do not guarantee a successful reservation; availability is checked again when creating the reservation.
+- Employees can only view and cancel their own reservations; accessing another user's reservation returns `404`. Admins, identified by `is_staff`, have access to all reservations and can manage rooms. The reservation owner and initial status are determined by the server.
+- Cancelled reservations are not deleted; their status is set to `cancelled`, and the cancellation timestamp is recorded. They no longer block new reservations. Repeated cancellation requests succeed, and the original cancellation timestamp is preserved.
+
+Tests: Successful reservation creation, overlapping reservations returning `409`, back-to-back reservations, preventing reservations for inactive rooms or rooms with insufficient capacity, validation of time intervals and attendee counts, access and cancellation restricted to the owner or admin, repeated cancellation and availability of the time slot after cancellation, and repeated requests using the same `Idempotency-Key` with identical or different data.
+
+Concurrency tests are performed on PostgreSQL using `TransactionTestCase`, separate database connections, and synchronized starts: for 10 requests targeting the same room and time interval with different keys, exactly 1 response must be `201`, 9 responses must be `409`, and only one active reservation must exist. With the same key and identical data, only one reservation must be created, and all requests must receive the same response.
