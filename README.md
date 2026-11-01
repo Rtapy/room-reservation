@@ -31,6 +31,17 @@ The company timezone is `Asia/Tehran`; Django timezone support is enabled.
 
 ## Current scope
 
-Stage 1: project setup, environment settings, DRF installation, and PostgreSQL connection.
-Reservation models, token authentication, API endpoints, and business/concurrency tests will be added in the next stages.
+Stages 1–2: project setup, environment settings, DRF installation, PostgreSQL connection, and the `Room` and `Reservation` models with migrations and database constraints.
+The initial migration installs `btree_gist` for the exclusion constraint. The local Compose database user has the required permissions.
+Token authentication, API endpoints, the reservation service, and HTTP/concurrency tests for those paths will be added in the next stages. Working hours, configurable duration limits, inactive rooms, and capacity versus attendee count will be validated by that service.
 Design decisions are in [docs/DECISIONS.md](docs/DECISIONS.md); the task is in [docs/task.pdf](docs/task.pdf).
+
+## Model tests
+
+With PostgreSQL running and the virtual environment active:
+
+```bash
+python manage.py test reservations.tests --noinput
+```
+
+These tests exercise database constraints, including 10 concurrent ORM inserts using separate PostgreSQL connections: one succeeds and nine are rejected by the exclusion constraint. This verifies the database safeguard; API responses, row locking in the service, and idempotency will be tested when those features are implemented. The database user must be able to create the separate test database.
