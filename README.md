@@ -31,9 +31,9 @@ The company timezone is `Asia/Tehran`; Django timezone support is enabled.
 
 ## Current scope
 
-Stages 1–3: project setup, environment settings, PostgreSQL connection, `Room` and `Reservation` models with database constraints, token authentication, and access control for room management and reservation reads.
+Stages 1–4: project setup, environment settings, PostgreSQL connection, models and database constraints, token authentication, access control, and room availability search with shared time validation.
 The initial migration installs `btree_gist` for the exclusion constraint. The local Compose database user has the required permissions.
-Availability search, reservation creation with idempotency and row locking, and cancellation will be added in the next stages. Working hours, configurable duration limits, inactive rooms, and capacity versus attendee count will be validated by the reservation service.
+Reservation creation with idempotency and row locking, and cancellation will be added in the next stages. Availability already checks working hours, configured duration limits, active rooms, and sufficient capacity; reservation creation will reuse the time validator and recheck availability inside the transaction.
 Design decisions are in [docs/DECISIONS.md](docs/DECISIONS.md); the task is in [docs/task.pdf](docs/task.pdf).
 
 ## Authentication and endpoints
@@ -57,6 +57,7 @@ Missing, invalid, or inactive-user tokens return `401` on protected endpoints; s
 | --- | --- | --- |
 | POST | `/api/auth/token/` | User credentials; no token required |
 | GET | `/api/rooms/` | Any authenticated user; includes inactive rooms |
+| GET | `/api/rooms/available/` | Any authenticated user; requires `start_at`, `end_at`, and `attendees_count` |
 | POST | `/api/rooms/` | Staff only |
 | PATCH | `/api/rooms/{id}/` | Staff only; change name, capacity, or active status |
 | GET | `/api/reservations/` | Own reservations, including cancelled; staff can see all |
@@ -66,6 +67,22 @@ Room fields are `id`, `name`, `capacity`, and `is_active`. Creating a room requi
 Reservation responses include `id`, `room`, `user`, `start_at`, `end_at`, `attendees_count`, `status`, `created_at`, and `cancelled_at`; `room` and `user` are IDs. Lists are JSON arrays.
 Employees attempting room writes receive `403`. Room deletion and direct reservation updates/deletion are not exposed.
 
+## Availability search
+
+```bash
+curl -G http://127.0.0.1:8000/api/rooms/available/ \
+  -H 'Authorization: Token <token>' \
+  --data-urlencode 'start_at=2030-01-02T09:00:00+03:30' \
+  --data-urlencode 'end_at=2030-01-02T10:00:00+03:30' \
+  --data-urlencode 'attendees_count=3'
+```
+
+Choose a future date when running this example. Both datetimes require an explicit timezone offset or `Z`; use URL encoding to preserve `+` in offsets. The attendee count must be a positive integer.
+The start must be before the end and cannot be in the past. Duration must be within the configured limits, including their boundaries. The entire session must fit within 08:00–18:00 on the same date in `Asia/Tehran`, regardless of the input offset. There is no weekday restriction.
+
+The response is a JSON array of active rooms with enough capacity and no overlapping confirmed reservation from any user. Cancelled reservations are ignored, and adjacent sessions do not overlap. No matches returns `200` with `[]`; invalid parameters return `400` with field errors or `non_field_errors`.
+Search does not reserve or lock a room; another user may reserve it before creation, so the creation service will check again.
+
 ## Tests
 
 With PostgreSQL running and the virtual environment active:
@@ -74,5 +91,5 @@ With PostgreSQL running and the virtual environment active:
 python manage.py test reservations.tests --noinput
 ```
 
-Tests cover database constraints, token login and token-authenticated API access, staff-only room writes, and reservation list/detail isolation. API tests use DRF's APIClient with real tokens and PostgreSQL; they do not bypass authentication.
+Tests cover database constraints, token login and token-authenticated API access, staff-only room writes, reservation list/detail isolation, and availability filtering and validation. Availability cases include configured duration limits, Tehran working hours, explicit timezones, all overlap shapes, adjacency, inactive/undersized rooms, and cancelled reservations. API tests use DRF's APIClient with real tokens and PostgreSQL; they do not bypass authentication.
 The database tests include 10 concurrent ORM inserts using separate PostgreSQL connections: one succeeds and nine are rejected by the exclusion constraint. Reservation creation/cancellation over HTTP, row locking in the service, and idempotency will be tested when those features are implemented. The database user must be able to create the separate test database.
