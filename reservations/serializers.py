@@ -15,17 +15,23 @@ class AwareDateTimeField(serializers.DateTimeField):
         return super().enforce_timezone(value)
 
 
-class AvailabilityQuerySerializer(serializers.Serializer):
+class ReservationWindowSerializer(serializers.Serializer):
     start_at = AwareDateTimeField()
     end_at = AwareDateTimeField()
     attendees_count = serializers.IntegerField(min_value=1)
 
+
+class AvailabilityQuerySerializer(ReservationWindowSerializer):
     def validate(self, attrs):
         try:
             validate_reservation_window(attrs["start_at"], attrs["end_at"])
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.message_dict) from exc
         return attrs
+
+
+class ReservationCreateSerializer(ReservationWindowSerializer):
+    room = serializers.IntegerField(min_value=1)
 
 
 class RoomSerializer(serializers.ModelSerializer):
