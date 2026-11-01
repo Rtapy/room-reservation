@@ -12,6 +12,7 @@
 - Available rooms are searched using `start_at`, `end_at`, and `attendees_count`. Search results do not guarantee a successful reservation; availability is checked again when creating the reservation.
 - Employees can only view and cancel their own reservations; accessing another user's reservation returns `404`. Admins, identified by `is_staff`, have access to all reservations and can manage rooms. The reservation owner and initial status are determined by the server.
 - Cancelled reservations are not deleted; their status is set to `cancelled`, and the cancellation timestamp is recorded. They no longer block new reservations. Repeated cancellation requests succeed, and the original cancellation timestamp is preserved.
+- Reservation statuses are `confirmed` and `cancelled`. Only cancelled reservations have a cancellation timestamp. Referenced rooms and users use `PROTECT` so deleting them does not remove reservation history.
 
 Tests: Successful reservation creation, overlapping reservations returning `409`, back-to-back reservations, preventing reservations for inactive rooms or rooms with insufficient capacity, validation of time intervals and attendee counts, access and cancellation restricted to the owner or admin, repeated cancellation and availability of the time slot after cancellation, and repeated requests using the same `Idempotency-Key` with identical or different data.
 
